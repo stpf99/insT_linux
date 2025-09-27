@@ -1,19 +1,19 @@
-#!/bin/bash
+#!/bin/sh
 
 # Chimera Linux x86_64 UEFI Complete Installer
 # Supports /dev/sdX and /dev/emmcX drives
-# Uses ncurses for interface
+# POSIX shell compatible
 
 set -e
 
-# Colors and formatting
+# Colors and formatting (using POSIX escape sequences)
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 WHITE='\033[1;37m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # Global variables
 SELECTED_DISK=""
@@ -24,103 +24,143 @@ INSTALLATION_TYPE=""
 
 # Check if running as root
 check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        echo -e "${RED}Ten installer musi być uruchomiony jako root${NC}"
+    if [ "$(id -u)" -ne 0 ]; then
+        printf "${RED}Ten installer musi być uruchomiony jako root${NC}\n"
         exit 1
     fi
 }
 
 # Check if system is UEFI
 check_uefi() {
-    if [[ ! -d "/sys/firmware/efi" ]]; then
-        echo -e "${RED}System nie jest uruchomiony w trybie UEFI${NC}"
-        echo -e "${YELLOW}Ten installer wymaga systemu UEFI${NC}"
+    if [ ! -d "/sys/firmware/efi" ]; then
+        printf "${RED}System nie jest uruchomiony w trybie UEFI${NC}\n"
+        printf "${YELLOW}Ten installer wymaga systemu UEFI${NC}\n"
         exit 1
     fi
 }
 
 # Check if chimera-bootstrap exists
 check_chimera_tools() {
-    if ! command -v chimera-bootstrap &> /dev/null; then
-        echo -e "${RED}chimera-bootstrap nie znaleziony${NC}"
-        echo -e "${YELLOW}Uruchom ten installer z Chimera Linux live ISO lub zainstalowanego systemu${NC}"
+    printf "${BLUE}Sprawdzanie wymaganych narzędzi...${NC}\n"
+    
+    # Check chimera-bootstrap
+    if ! command -v chimera-bootstrap > /dev/null 2>&1; then
+        printf "${RED}chimera-bootstrap nie znaleziony${NC}\n"
+        printf "${YELLOW}Uruchom ten installer z Chimera Linux live ISO lub zainstalowanego systemu${NC}\n"
         exit 1
     fi
+    
+    # Check parted
+    if ! command -v parted > /dev/null 2>&1; then
+        printf "${RED}parted nie znaleziony${NC}\n"
+        printf "${YELLOW}Instalacja wymaganych narzędzi...${NC}\n"
+        if command -v apk > /dev/null 2>&1; then
+            apk add parted util-linux || {
+                printf "${RED}Nie można zainstalować parted. Zainstaluj ręcznie: apk add parted util-linux${NC}\n"
+                exit 1
+            }
+        else
+            printf "${RED}Zainstaluj parted ręcznie przed uruchomieniem installera${NC}\n"
+            exit 1
+        fi
+    fi
+    
+    # Check other required tools
+    for tool in mkfs.fat mkfs.f2fs lsblk; do
+        if ! command -v "$tool" > /dev/null 2>&1; then
+            printf "${YELLOW}Brak narzędzia: %s${NC}\n" "$tool"
+            if command -v apk > /dev/null 2>&1; then
+                case "$tool" in
+                    mkfs.fat) apk add dosfstools;;
+                    mkfs.f2fs) apk add f2fs-tools;;
+                    lsblk) apk add util-linux;;
+                esac
+            else
+                printf "${RED}Zainstaluj wymagane narzędzia przed uruchomieniem${NC}\n"
+                exit 1
+            fi
+        fi
+    done
+    
+    printf "${GREEN}Wszystkie wymagane narzędzia są dostępne${NC}\n"
 }
 
 # Display header
 show_header() {
     clear
-    echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║          Chimera Linux UEFI Complete Installer       ║${NC}"
-    echo -e "${CYAN}║                    x86_64 Edition                    ║${NC}"
-    echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
-    echo
+    printf "${CYAN}╔══════════════════════════════════════════════════════╗${NC}\n"
+    printf "${CYAN}║          Chimera Linux UEFI Complete Installer       ║${NC}\n"
+    printf "${CYAN}║                    x86_64 Edition                    ║${NC}\n"
+    printf "${CYAN}╚══════════════════════════════════════════════════════╝${NC}\n"
+    printf "\n"
 }
 
 # Show partitioning requirements
 show_requirements() {
     show_header
-    echo -e "${WHITE}WYMAGANIA PARTYCJONOWANIA UEFI + systemd-boot:${NC}"
-    echo
-    echo -e "${CYAN}Wymagane partycje:${NC}"
-    echo -e "  ${GREEN}1. EFI System Partition (ESP)${NC}"
-    echo -e "     • Typ: EFI System (c12a7328-f81f-11d2-ba4b-00a0c93ec93b)"
-    echo -e "     • Rozmiar: minimum 200MB (zalecane 512MB)"
-    echo -e "     • System plików: FAT32"
-    echo -e "     • Punkt montowania: /boot (wspólny z ESP)"
-    echo
-    echo -e "  ${GREEN}2. Root filesystem${NC}"
-    echo -e "     • Typ: Linux filesystem (0fc63daf-8483-4772-8e79-3d69d8477de4)"
-    echo -e "     • Rozmiar: minimum 14GB"
-    echo -e "     • System plików: f2fs (zalecane) lub ext4"
-    echo
-    echo -e "${CYAN}Konfiguracja systemd-boot:${NC}"
-    echo -e "  • ESP musi być zamontowany jako /boot"
-    echo -e "  • Nie wymaga oddzielnej partycji /boot"
-    echo -e "  • Tabela partycji: GPT"
-    echo
-    echo -e "${YELLOW}Ten installer wykona kompletną instalację Chimera Linux${NC}"
-    echo
-    read -p "Naciśnij Enter aby kontynuować..."
+    printf "${WHITE}WYMAGANIA PARTYCJONOWANIA UEFI + systemd-boot:${NC}\n"
+    printf "\n"
+    printf "${CYAN}Wymagane partycje:${NC}\n"
+    printf "  ${GREEN}1. EFI System Partition (ESP)${NC}\n"
+    printf "     • Typ: EFI System (c12a7328-f81f-11d2-ba4b-00a0c93ec93b)\n"
+    printf "     • Rozmiar: minimum 200MB (zalecane 512MB)\n"
+    printf "     • System plików: FAT32\n"
+    printf "     • Punkt montowania: /boot (wspólny z ESP)\n"
+    printf "\n"
+    printf "  ${GREEN}2. Root filesystem${NC}\n"
+    printf "     • Typ: Linux filesystem (0fc63daf-8483-4772-8e79-3d69d8477de4)\n"
+    printf "     • Rozmiar: minimum 14GB\n"
+    printf "     • System plików: f2fs (zalecane) lub ext4\n"
+    printf "\n"
+    printf "${CYAN}Konfiguracja systemd-boot:${NC}\n"
+    printf "  • ESP musi być zamontowany jako /boot\n"
+    printf "  • Nie wymaga oddzielnej partycji /boot\n"
+    printf "  • Tabela partycji: GPT\n"
+    printf "\n"
+    printf "${YELLOW}Ten installer wykona kompletną instalację Chimera Linux${NC}\n"
+    printf "\n"
+    printf "Naciśnij Enter aby kontynuować..."
+    read dummy
 }
 
 # Detect available disks
 detect_disks() {
-    echo -e "${BLUE}Wykrywanie dostępnych dysków...${NC}"
+    printf "${BLUE}Wykrywanie dostępnych dysków...${NC}\n"
     
-    # Find all block devices that could be system disks
-    DISKS=()
+    # Create temporary file to store disk list
+    DISK_LIST_FILE="/tmp/chimera_disks.$$"
+    > "$DISK_LIST_FILE"
     
     # Check for SATA/SCSI disks (/dev/sdX)
     for disk in /dev/sd[a-z]; do
-        if [[ -b "$disk" ]]; then
-            SIZE=$(lsblk -dno SIZE "$disk" 2>/dev/null || echo "nieznany")
-            MODEL=$(lsblk -dno MODEL "$disk" 2>/dev/null || echo "nieznany")
-            DISKS+=("$disk|SATA/SCSI|$SIZE|$MODEL")
+        if [ -b "$disk" ]; then
+            SIZE=$(lsblk -dno SIZE "$disk" 2>/dev/null || printf "nieznany")
+            MODEL=$(lsblk -dno MODEL "$disk" 2>/dev/null || printf "nieznany")
+            printf "%s|SATA/SCSI|%s|%s\n" "$disk" "$SIZE" "$MODEL" >> "$DISK_LIST_FILE"
         fi
     done
     
     # Check for eMMC disks (/dev/mmcblkX)
     for disk in /dev/mmcblk[0-9]; do
-        if [[ -b "$disk" ]]; then
-            SIZE=$(lsblk -dno SIZE "$disk" 2>/dev/null || echo "nieznany")
-            MODEL=$(lsblk -dno MODEL "$disk" 2>/dev/null || echo "eMMC")
-            DISKS+=("$disk|eMMC|$SIZE|$MODEL")
+        if [ -b "$disk" ]; then
+            SIZE=$(lsblk -dno SIZE "$disk" 2>/dev/null || printf "nieznany")
+            MODEL=$(lsblk -dno MODEL "$disk" 2>/dev/null || printf "eMMC")
+            printf "%s|eMMC|%s|%s\n" "$disk" "$SIZE" "$MODEL" >> "$DISK_LIST_FILE"
         fi
     done
     
     # Check for NVMe disks (/dev/nvmeXn1)
     for disk in /dev/nvme[0-9]n1; do
-        if [[ -b "$disk" ]]; then
-            SIZE=$(lsblk -dno SIZE "$disk" 2>/dev/null || echo "nieznany")
-            MODEL=$(lsblk -dno MODEL "$disk" 2>/dev/null || echo "NVMe")
-            DISKS+=("$disk|NVMe|$SIZE|$MODEL")
+        if [ -b "$disk" ]; then
+            SIZE=$(lsblk -dno SIZE "$disk" 2>/dev/null || printf "nieznany")
+            MODEL=$(lsblk -dno MODEL "$disk" 2>/dev/null || printf "NVMe")
+            printf "%s|NVMe|%s|%s\n" "$disk" "$SIZE" "$MODEL" >> "$DISK_LIST_FILE"
         fi
     done
     
-    if [[ ${#DISKS[@]} -eq 0 ]]; then
-        echo -e "${RED}Nie znaleziono żadnych dysków${NC}"
+    if [ ! -s "$DISK_LIST_FILE" ]; then
+        printf "${RED}Nie znaleziono żadnych dysków${NC}\n"
+        rm -f "$DISK_LIST_FILE"
         exit 1
     fi
 }
@@ -128,114 +168,138 @@ detect_disks() {
 # Select disk for installation
 select_disk() {
     show_header
-    echo -e "${WHITE}WYKRYTE DYSKI:${NC}"
-    echo
+    printf "${WHITE}WYKRYTE DYSKI:${NC}\n"
+    printf "\n"
     
-    for i in "${!DISKS[@]}"; do
-        IFS='|' read -r disk type size model <<< "${DISKS[$i]}"
-        printf "%2d) %-12s %-10s %-8s %s\n" $((i+1)) "$disk" "$type" "$size" "$model"
-    done
+    # Display disks with numbers
+    i=1
+    while IFS='|' read -r disk type size model; do
+        printf "%2d) %-12s %-10s %-8s %s\n" "$i" "$disk" "$type" "$size" "$model"
+        i=$((i + 1))
+    done < "$DISK_LIST_FILE"
     
-    echo
+    total_disks=$((i - 1))
+    printf "\n"
+    
     while true; do
-        read -p "Wybierz dysk (1-${#DISKS[@]}): " choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#DISKS[@]} ]]; then
-            IFS='|' read -r SELECTED_DISK _ _ _ <<< "${DISKS[$((choice-1))]}"
+        printf "Wybierz dysk (1-%d): " "$total_disks"
+        read choice
+        
+        # Check if choice is a number
+        case "$choice" in
+            ''|*[!0-9]*) 
+                printf "${RED}Nieprawidłowy wybór. Spróbuj ponownie.${NC}\n"
+                continue
+                ;;
+        esac
+        
+        if [ "$choice" -ge 1 ] && [ "$choice" -le "$total_disks" ]; then
+            # Get selected disk
+            SELECTED_DISK=$(sed -n "${choice}p" "$DISK_LIST_FILE" | cut -d'|' -f1)
             break
         else
-            echo -e "${RED}Nieprawidłowy wybór. Spróbuj ponownie.${NC}"
+            printf "${RED}Nieprawidłowy wybór. Spróbuj ponownie.${NC}\n"
         fi
     done
     
-    echo -e "${GREEN}Wybrano dysk: $SELECTED_DISK${NC}"
+    printf "${GREEN}Wybrano dysk: %s${NC}\n" "$SELECTED_DISK"
+    rm -f "$DISK_LIST_FILE"
 }
 
 # Show current disk layout
 show_current_layout() {
     show_header
-    echo -e "${WHITE}AKTUALNY UKŁAD PARTYCJI - $SELECTED_DISK:${NC}"
-    echo
+    printf "${WHITE}AKTUALNY UKŁAD PARTYCJI - %s:${NC}\n" "$SELECTED_DISK"
+    printf "\n"
     
-    if lsblk "$SELECTED_DISK" >/dev/null 2>&1; then
+    if lsblk "$SELECTED_DISK" > /dev/null 2>&1; then
         lsblk -f "$SELECTED_DISK"
-        echo
+        printf "\n"
         
         # Check partition table type
-        PTABLE=$(parted "$SELECTED_DISK" print 2>/dev/null | grep "Partition Table:" | awk '{print $3}' || echo "nieznany")
-        echo -e "${CYAN}Typ tabeli partycji: $PTABLE${NC}"
-        echo
+        PTABLE=$(parted "$SELECTED_DISK" print 2>/dev/null | grep "Partition Table:" | awk '{print $3}' || printf "nieznany")
+        printf "${CYAN}Typ tabeli partycji: %s${NC}\n" "$PTABLE"
+        printf "\n"
     else
-        echo -e "${YELLOW}Dysk nie ma jeszcze partycji${NC}"
-        echo
+        printf "${YELLOW}Dysk nie ma jeszcze partycji${NC}\n"
+        printf "\n"
     fi
 }
 
 # Check if current layout is suitable for Chimera Linux
 check_suitable_layout() {
-    local efi_found=false
-    local root_found=false
-    local efi_size=0
-    local root_size=0
+    efi_found=false
+    root_found=false
+    efi_size=0
+    root_size=0
     
     # Determine partition naming scheme
-    local part_prefix=""
-    if [[ "$SELECTED_DISK" =~ mmcblk[0-9] ]] || [[ "$SELECTED_DISK" =~ nvme[0-9]n1 ]]; then
-        part_prefix="${SELECTED_DISK}p"
-    else
-        part_prefix="$SELECTED_DISK"
-    fi
+    case "$SELECTED_DISK" in
+        */mmcblk[0-9]|*/nvme[0-9]n1)
+            part_prefix="${SELECTED_DISK}p"
+            ;;
+        *)
+            part_prefix="$SELECTED_DISK"
+            ;;
+    esac
     
     # Check for EFI partition
     for part in "${part_prefix}"*; do
-        if [[ -b "$part" ]]; then
-            local part_type=$(lsblk -dno PARTTYPE "$part" 2>/dev/null || echo "")
-            local part_size_bytes=$(lsblk -dno SIZE --bytes "$part" 2>/dev/null || echo "0")
-            local part_size_mb=$((part_size_bytes / 1024 / 1024))
+        if [ -b "$part" ]; then
+            part_type=$(lsblk -dno PARTTYPE "$part" 2>/dev/null || printf "")
+            part_size_bytes=$(lsblk -dno SIZE --bytes "$part" 2>/dev/null || printf "0")
+            part_size_mb=$((part_size_bytes / 1024 / 1024))
             
             # Check if it's EFI System Partition (c12a7328-f81f-11d2-ba4b-00a0c93ec93b)
-            if [[ "$part_type" =~ ^c12a7328 ]]; then
-                efi_found=true
-                efi_size=$part_size_mb
-                EFI_PARTITION="$part"
-                break
-            fi
+            case "$part_type" in
+                c12a7328*)
+                    efi_found=true
+                    efi_size=$part_size_mb
+                    EFI_PARTITION="$part"
+                    break
+                    ;;
+            esac
         fi
     done
     
     # Check for suitable root partition (any Linux partition with >14GB)
     for part in "${part_prefix}"*; do
-        if [[ -b "$part" ]] && [[ "$part" != "$EFI_PARTITION" ]]; then
-            local part_type=$(lsblk -dno PARTTYPE "$part" 2>/dev/null || echo "")
-            local part_size_bytes=$(lsblk -dno SIZE --bytes "$part" 2>/dev/null || echo "0")
-            local part_size_gb=$((part_size_bytes / 1024 / 1024 / 1024))
+        if [ -b "$part" ] && [ "$part" != "$EFI_PARTITION" ]; then
+            part_type=$(lsblk -dno PARTTYPE "$part" 2>/dev/null || printf "")
+            part_size_bytes=$(lsblk -dno SIZE --bytes "$part" 2>/dev/null || printf "0")
+            part_size_gb=$((part_size_bytes / 1024 / 1024 / 1024))
             
             # Check if it's Linux filesystem (0fc63daf-8483-4772-8e79-3d69d8477de4)
-            if [[ "$part_type" =~ ^0fc63daf ]] && [[ $part_size_gb -ge 14 ]]; then
-                root_found=true
-                root_size=$part_size_gb
-                ROOT_PARTITION="$part"
-                break
-            fi
+            case "$part_type" in
+                0fc63daf*)
+                    if [ "$part_size_gb" -ge 14 ]; then
+                        root_found=true
+                        root_size=$part_size_gb
+                        ROOT_PARTITION="$part"
+                        break
+                    fi
+                    ;;
+            esac
         fi
     done
     
-    if [[ "$efi_found" == true ]] && [[ "$root_found" == true ]] && [[ $efi_size -ge 200 ]]; then
-        echo -e "${GREEN}Znaleziono odpowiedni układ partycji:${NC}"
-        echo -e "  EFI: $EFI_PARTITION (${efi_size}MB)"
-        echo -e "  Root: $ROOT_PARTITION (${root_size}GB)"
-        echo
+    if [ "$efi_found" = true ] && [ "$root_found" = true ] && [ "$efi_size" -ge 200 ]; then
+        printf "${GREEN}Znaleziono odpowiedni układ partycji:${NC}\n"
+        printf "  EFI: %s (%dMB)\n" "$EFI_PARTITION" "$efi_size"
+        printf "  Root: %s (%dGB)\n" "$ROOT_PARTITION" "$root_size"
+        printf "\n"
         return 0
     else
-        echo -e "${YELLOW}Aktualny układ nie spełnia wymagań:${NC}"
-        if [[ "$efi_found" != true ]]; then
-            echo -e "  • Brak partycji EFI System"
-        elif [[ $efi_size -lt 200 ]]; then
-            echo -e "  • Partycja EFI za mała (${efi_size}MB < 200MB)"
+        printf "${YELLOW}Aktualny układ nie spełnia wymagań:${NC}\n"
+        if [ "$efi_found" != true ]; then
+            printf "  • Brak partycji EFI System\n"
+        elif [ "$efi_size" -lt 200 ]; then
+            printf "  • Partycja EFI za mała (%dMB < 200MB)\n" "$efi_size"
         fi
-        if [[ "$root_found" != true ]]; then
-            echo -e "  • Brak odpowiedniej partycji root (>14GB)"
+        if [ "$root_found" != true ]; then
+            printf "  • Brak odpowiedniej partycji root (>14GB)\n"
         fi
-        echo
+        printf "\n"
         return 1
     fi
 }
@@ -243,74 +307,102 @@ check_suitable_layout() {
 # Ask user about using current layout
 ask_use_current() {
     while true; do
-        read -p "Czy chcesz użyć aktualnego układu partycji? (t/N): " choice
-        case $choice in
-            [Tt]* ) return 0;;
-            [Nn]* | "" ) return 1;;
-            * ) echo "Odpowiedz t (tak) lub n (nie).";;
+        printf "Czy chcesz użyć aktualnego układu partycji? (t/N): "
+        read choice
+        case "$choice" in
+            [Tt]*) return 0;;
+            [Nn]*|"") return 1;;
+            *) printf "Odpowiedz t (tak) lub n (nie).\n";;
         esac
     done
 }
 
 # Confirm disk wipe
 confirm_disk_wipe() {
-    echo -e "${RED}UWAGA: Ta operacja usunie WSZYSTKIE dane na dysku $SELECTED_DISK${NC}"
-    echo -e "${YELLOW}Czy na pewno chcesz kontynuować?${NC}"
-    echo
-    read -p "Wpisz 'TAK' aby potwierdzić: " confirmation
-    if [[ "$confirmation" != "TAK" ]]; then
-        echo -e "${YELLOW}Operacja anulowana${NC}"
+    printf "${RED}UWAGA: Ta operacja usunie WSZYSTKIE dane na dysku %s${NC}\n" "$SELECTED_DISK"
+    printf "${YELLOW}Czy na pewno chcesz kontynuować?${NC}\n"
+    printf "\n"
+    printf "Wpisz 'TAK' aby potwierdzić: "
+    read confirmation
+    if [ "$confirmation" != "TAK" ]; then
+        printf "${YELLOW}Operacja anulowana${NC}\n"
         exit 0
     fi
 }
 
 # Create new partition layout
 create_partitions() {
-    echo -e "${BLUE}Tworzenie nowej tabeli partycji...${NC}"
+    printf "${BLUE}Tworzenie nowej tabeli partycji...${NC}\n"
+    
+    # Unmount any mounted partitions on this disk first
+    for part in "${SELECTED_DISK}"*; do
+        if [ -b "$part" ] && mountpoint -q "$part" 2>/dev/null; then
+            printf "${YELLOW}Odmontowywanie %s...${NC}\n" "$part"
+            umount "$part" 2>/dev/null || true
+        fi
+    done
+    
+    # Wipe first sectors to ensure clean slate
+    printf "${BLUE}Czyszczenie początku dysku...${NC}\n"
+    dd if=/dev/zero of="$SELECTED_DISK" bs=1M count=10 2>/dev/null || true
     
     # Create GPT partition table
+    printf "${BLUE}Tworzenie tabeli partycji GPT...${NC}\n"
     parted -s "$SELECTED_DISK" mklabel gpt
     
     # Create EFI System Partition (512MB)
-    echo -e "${BLUE}Tworzenie partycji EFI (512MB)...${NC}"
+    printf "${BLUE}Tworzenie partycji EFI (512MB)...${NC}\n"
     parted -s "$SELECTED_DISK" mkpart primary fat32 1MiB 513MiB
     parted -s "$SELECTED_DISK" set 1 esp on
     
     # Create root partition (remaining space)
-    echo -e "${BLUE}Tworzenie partycji root...${NC}"
+    printf "${BLUE}Tworzenie partycji root...${NC}\n"
     parted -s "$SELECTED_DISK" mkpart primary 513MiB 100%
     
     # Set partition variables
-    if [[ "$SELECTED_DISK" =~ mmcblk[0-9] ]] || [[ "$SELECTED_DISK" =~ nvme[0-9]n1 ]]; then
-        EFI_PARTITION="${SELECTED_DISK}p1"
-        ROOT_PARTITION="${SELECTED_DISK}p2"
-    else
-        EFI_PARTITION="${SELECTED_DISK}1"
-        ROOT_PARTITION="${SELECTED_DISK}2"
-    fi
+    case "$SELECTED_DISK" in
+        */mmcblk[0-9]|*/nvme[0-9]n1)
+            EFI_PARTITION="${SELECTED_DISK}p1"
+            ROOT_PARTITION="${SELECTED_DISK}p2"
+            ;;
+        *)
+            EFI_PARTITION="${SELECTED_DISK}1"
+            ROOT_PARTITION="${SELECTED_DISK}2"
+            ;;
+    esac
     
     # Wait for kernel to recognize new partitions
+    printf "${BLUE}Oczekiwanie na rozpoznanie partycji...${NC}\n"
+    sleep 3
+    partprobe "$SELECTED_DISK" 2>/dev/null || true
     sleep 2
-    partprobe "$SELECTED_DISK"
-    sleep 2
+    
+    # Verify partitions were created
+    if [ ! -b "$EFI_PARTITION" ] || [ ! -b "$ROOT_PARTITION" ]; then
+        printf "${RED}Błąd: Partycje nie zostały utworzone poprawnie${NC}\n"
+        printf "Spróbuj ponownie lub sprawdź dysk ręcznie\n"
+        exit 1
+    fi
+    
+    printf "${GREEN}Partycje utworzone pomyślnie${NC}\n"
 }
 
 # Format partitions
 format_partitions() {
-    echo -e "${BLUE}Formatowanie partycji...${NC}"
+    printf "${BLUE}Formatowanie partycji...${NC}\n"
     
     # Format EFI partition as FAT32
-    echo -e "${BLUE}Formatowanie partycji EFI jako FAT32...${NC}"
+    printf "${BLUE}Formatowanie partycji EFI jako FAT32...${NC}\n"
     mkfs.fat -F32 -n "EFI" "$EFI_PARTITION"
     
     # Format root partition as f2fs
-    echo -e "${BLUE}Formatowanie partycji root jako f2fs...${NC}"
+    printf "${BLUE}Formatowanie partycji root jako f2fs...${NC}\n"
     mkfs.f2fs -f -l "chimera-root" "$ROOT_PARTITION"
 }
 
 # Mount partitions
 mount_partitions() {
-    echo -e "${BLUE}Montowanie partycji...${NC}"
+    printf "${BLUE}Montowanie partycji...${NC}\n"
     
     # Create mount point and mount root partition
     mkdir -p "$INSTALL_ROOT"
@@ -319,110 +411,129 @@ mount_partitions() {
     # Set proper permissions for root filesystem
     chmod 755 "$INSTALL_ROOT"
     
+    # Clean any potential lost+found or other files that might exist on fresh filesystem
+    if [ "$(ls -A "$INSTALL_ROOT" 2>/dev/null)" ]; then
+        printf "${YELLOW}Czyszczenie katalogu instalacji...${NC}\n"
+        find "$INSTALL_ROOT" -mindepth 1 -maxdepth 1 ! -name 'lost+found' -exec rm -rf {} + 2>/dev/null || true
+    fi
+    
     # Create and mount EFI partition as /boot (systemd-boot requirement)
     mkdir -p "$INSTALL_ROOT/boot"
     mount "$EFI_PARTITION" "$INSTALL_ROOT/boot"
     
-    echo -e "${GREEN}Partycje zamontowane w $INSTALL_ROOT${NC}"
+    printf "${GREEN}Partycje zamontowane w %s${NC}\n" "$INSTALL_ROOT"
 }
 
 # Select installation type
 select_installation_type() {
     show_header
-    echo -e "${WHITE}WYBÓR TYPU INSTALACJI:${NC}"
-    echo
-    echo -e "1) ${GREEN}Instalacja lokalna${NC} - kopiuje aktualny system live"
-    echo -e "2) ${GREEN}Instalacja sieciowa${NC} - pobiera najnowsze pakiety z repozytorium"
-    echo
-    echo -e "${CYAN}Instalacja lokalna:${NC} szybsza, używa aktualnego systemu live"
-    echo -e "${CYAN}Instalacja sieciowa:${NC} zawsze najnowsze pakiety, wymaga internetu"
-    echo
+    printf "${WHITE}WYBÓR TYPU INSTALACJI:${NC}\n"
+    printf "\n"
+    printf "1) ${GREEN}Instalacja lokalna${NC} - kopiuje aktualny system live\n"
+    printf "2) ${GREEN}Instalacja sieciowa${NC} - pobiera najnowsze pakiety z repozytorium\n"
+    printf "\n"
+    printf "${CYAN}Instalacja lokalna:${NC} szybsza, używa aktualnego systemu live\n"
+    printf "${CYAN}Instalacja sieciowa:${NC} zawsze najnowsze pakiety, wymaga internetu\n"
+    printf "\n"
     
     while true; do
-        read -p "Wybierz typ instalacji (1-2): " choice
-        case $choice in
+        printf "Wybierz typ instalacji (1-2): "
+        read choice
+        case "$choice" in
             1) INSTALLATION_TYPE="local"; break;;
             2) INSTALLATION_TYPE="network"; break;;
-            *) echo -e "${RED}Nieprawidłowy wybór. Wybierz 1 lub 2.${NC}";;
+            *) printf "${RED}Nieprawidłowy wybór. Wybierz 1 lub 2.${NC}\n";;
         esac
     done
     
-    echo -e "${GREEN}Wybrano: $([ "$INSTALLATION_TYPE" = "local" ] && echo "instalacja lokalna" || echo "instalacja sieciowa")${NC}"
+    if [ "$INSTALLATION_TYPE" = "local" ]; then
+        printf "${GREEN}Wybrano: instalacja lokalna${NC}\n"
+    else
+        printf "${GREEN}Wybrano: instalacja sieciowa${NC}\n"
+    fi
 }
 
 # Perform system installation
 install_system() {
     show_header
-    echo -e "${WHITE}INSTALACJA CHIMERA LINUX...${NC}"
-    echo
+    printf "${WHITE}INSTALACJA CHIMERA LINUX...${NC}\n"
+    printf "\n"
     
-    if [[ "$INSTALLATION_TYPE" = "local" ]]; then
-        echo -e "${BLUE}Wykonywanie instalacji lokalnej...${NC}"
-        chimera-bootstrap -l "$INSTALL_ROOT"
+    # Check if target directory has any files that would block installation
+    if [ "$(find "$INSTALL_ROOT" -mindepth 1 -maxdepth 1 ! -name 'boot' ! -name 'lost+found' 2>/dev/null | wc -l)" -gt 0 ]; then
+        printf "${YELLOW}Katalog instalacji zawiera pliki. Używanie flagi -f...${NC}\n"
+        FORCE_FLAG="-f"
     else
-        echo -e "${BLUE}Wykonywanie instalacji sieciowej...${NC}"
-        chimera-bootstrap "$INSTALL_ROOT"
+        FORCE_FLAG=""
     fi
     
-    echo -e "${GREEN}Instalacja systemu zakończona${NC}"
+    if [ "$INSTALLATION_TYPE" = "local" ]; then
+        printf "${BLUE}Wykonywanie instalacji lokalnej...${NC}\n"
+        chimera-bootstrap -l $FORCE_FLAG "$INSTALL_ROOT"
+    else
+        printf "${BLUE}Wykonywanie instalacji sieciowej...${NC}\n"
+        chimera-bootstrap $FORCE_FLAG "$INSTALL_ROOT"
+    fi
+    
+    printf "${GREEN}Instalacja systemu zakończona${NC}\n"
 }
 
 # Configure system in chroot
 configure_system() {
     show_header
-    echo -e "${WHITE}KONFIGURACJA SYSTEMU...${NC}"
-    echo
+    printf "${WHITE}KONFIGURACJA SYSTEMU...${NC}\n"
+    printf "\n"
     
     # Update system
-    echo -e "${BLUE}Aktualizacja systemu...${NC}"
+    printf "${BLUE}Aktualizacja systemu...${NC}\n"
     chimera-chroot "$INSTALL_ROOT" /bin/sh -c "
         apk update
-        apk upgrade --available || apk fix && apk upgrade --available
+        apk upgrade --available || (apk fix && apk upgrade --available)
     "
     
     # Remove base-live if local installation
-    if [[ "$INSTALLATION_TYPE" = "local" ]]; then
-        echo -e "${BLUE}Usuwanie pakietu base-live...${NC}"
+    if [ "$INSTALLATION_TYPE" = "local" ]; then
+        printf "${BLUE}Usuwanie pakietu base-live...${NC}\n"
         chimera-chroot "$INSTALL_ROOT" /bin/sh -c "apk del base-live" || true
     fi
     
     # Install kernel
-    echo -e "${BLUE}Instalacja kernela...${NC}"
+    printf "${BLUE}Instalacja kernela...${NC}\n"
     chimera-chroot "$INSTALL_ROOT" /bin/sh -c "apk add linux-lts"
     
     # Generate fstab
-    echo -e "${BLUE}Generowanie /etc/fstab...${NC}"
+    printf "${BLUE}Generowanie /etc/fstab...${NC}\n"
     genfstab "$INSTALL_ROOT" >> "$INSTALL_ROOT/etc/fstab"
     
     # Set root password
-    echo -e "${BLUE}Ustawianie hasła root...${NC}"
-    echo -e "${YELLOW}Ustaw hasło dla konta root:${NC}"
+    printf "${BLUE}Ustawianie hasła root...${NC}\n"
+    printf "${YELLOW}Ustaw hasło dla konta root:${NC}\n"
     chimera-chroot "$INSTALL_ROOT" passwd root
     
     # Create initramfs
-    echo -e "${BLUE}Tworzenie initramfs...${NC}"
+    printf "${BLUE}Tworzenie initramfs...${NC}\n"
     chimera-chroot "$INSTALL_ROOT" /bin/sh -c "update-initramfs -c -k all"
     
-    echo -e "${GREEN}Konfiguracja systemu zakończona${NC}"
+    printf "${GREEN}Konfiguracja systemu zakończona${NC}\n"
 }
 
 # Install and configure systemd-boot
 install_bootloader() {
     show_header
-    echo -e "${WHITE}INSTALACJA SYSTEMD-BOOT...${NC}"
-    echo
+    printf "${WHITE}INSTALACJA SYSTEMD-BOOT...${NC}\n"
+    printf "\n"
     
     # Install systemd-boot package
-    echo -e "${BLUE}Instalacja pakietu systemd-boot...${NC}"
+    printf "${BLUE}Instalacja pakietu systemd-boot...${NC}\n"
     chimera-chroot "$INSTALL_ROOT" /bin/sh -c "apk add systemd-boot"
     
     # Install bootloader
-    echo -e "${BLUE}Instalacja bootloadera...${NC}"
+    printf "${BLUE}Instalacja bootloadera...${NC}\n"
     chimera-chroot "$INSTALL_ROOT" /bin/sh -c "bootctl install"
     
     # Configure loader
-    echo -e "${BLUE}Konfiguracja bootloadera...${NC}"
-    cat > "$INSTALL_ROOT/boot/loader/loader.conf" << EOF
+    printf "${BLUE}Konfiguracja bootloadera...${NC}\n"
+    cat > "$INSTALL_ROOT/boot/loader/loader.conf" << 'EOF'
 default chimera.conf
 timeout 5
 console-mode max
@@ -430,44 +541,50 @@ editor no
 EOF
     
     # Generate boot entries
-    echo -e "${BLUE}Generowanie wpisów bootowania...${NC}"
+    printf "${BLUE}Generowanie wpisów bootowania...${NC}\n"
     chimera-chroot "$INSTALL_ROOT" /bin/sh -c "gen-systemd-boot"
     
-    echo -e "${GREEN}systemd-boot zainstalowany i skonfigurowany${NC}"
+    printf "${GREEN}systemd-boot zainstalowany i skonfigurowany${NC}\n"
 }
 
 # Show installation summary
 show_summary() {
     show_header
-    echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║             INSTALACJA ZAKOŃCZONA POMYŚLNIE          ║${NC}"
-    echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
-    echo
-    echo -e "${WHITE}PODSUMOWANIE INSTALACJI:${NC}"
-    echo -e "  • Dysk: $SELECTED_DISK"
-    echo -e "  • EFI: $EFI_PARTITION -> /boot"
-    echo -e "  • Root: $ROOT_PARTITION -> /"
-    echo -e "  • Typ instalacji: $([ "$INSTALLATION_TYPE" = "local" ] && echo "lokalna" || echo "sieciowa")"
-    echo -e "  • Bootloader: systemd-boot"
-    echo -e "  • System plików: f2fs (root), FAT32 (EFI)"
-    echo
-    echo -e "${WHITE}NASTĘPNE KROKI:${NC}"
-    echo -e "  1. Wyloguj się z chroot (jeśli jesteś w nim)"
-    echo -e "  2. Odmontuj partycje: umount -R $INSTALL_ROOT"
-    echo -e "  3. Uruchom ponownie system"
-    echo -e "  4. Usuń nośnik instalacyjny i uruchom z dysku"
-    echo -e "  5. Zaloguj się jako root z ustawionym hasłem"
-    echo
-    echo -e "${CYAN}Dokumentacja konfiguracji:${NC}"
-    echo -e "  https://chimera-linux.org/docs/configuration/post-installation"
-    echo
-    read -p "Naciśnij Enter aby zakończyć..."
+    printf "${GREEN}╔══════════════════════════════════════════════════════╗${NC}\n"
+    printf "${GREEN}║             INSTALACJA ZAKOŃCZONA POMYŚLNIE          ║${NC}\n"
+    printf "${GREEN}╚══════════════════════════════════════════════════════╝${NC}\n"
+    printf "\n"
+    printf "${WHITE}PODSUMOWANIE INSTALACJI:${NC}\n"
+    printf "  • Dysk: %s\n" "$SELECTED_DISK"
+    printf "  • EFI: %s -> /boot\n" "$EFI_PARTITION"
+    printf "  • Root: %s -> /\n" "$ROOT_PARTITION"
+    if [ "$INSTALLATION_TYPE" = "local" ]; then
+        printf "  • Typ instalacji: lokalna\n"
+    else
+        printf "  • Typ instalacji: sieciowa\n"
+    fi
+    printf "  • Bootloader: systemd-boot\n"
+    printf "  • System plików: f2fs (root), FAT32 (EFI)\n"
+    printf "\n"
+    printf "${WHITE}NASTĘPNE KROKI:${NC}\n"
+    printf "  1. Wyloguj się z chroot (jeśli jesteś w nim)\n"
+    printf "  2. Odmontuj partycje: umount -R %s\n" "$INSTALL_ROOT"
+    printf "  3. Uruchom ponownie system\n"
+    printf "  4. Usuń nośnik instalacyjny i uruchom z dysku\n"
+    printf "  5. Zaloguj się jako root z ustawionym hasłem\n"
+    printf "\n"
+    printf "${CYAN}Dokumentacja konfiguracji:${NC}\n"
+    printf "  https://chimera-linux.org/docs/configuration/post-installation\n"
+    printf "\n"
+    printf "Naciśnij Enter aby zakończyć..."
+    read dummy
 }
 
 # Cleanup on exit
 cleanup() {
-    echo -e "${YELLOW}Odmontowywanie partycji...${NC}"
+    printf "${YELLOW}Odmontowywanie partycji...${NC}\n"
     umount -R "$INSTALL_ROOT" 2>/dev/null || true
+    rm -f "/tmp/chimera_disks.$$" 2>/dev/null || true
 }
 
 # Main function
@@ -485,7 +602,7 @@ main() {
     
     if check_suitable_layout; then
         if ask_use_current; then
-            echo -e "${GREEN}Używanie aktualnego układu partycji${NC}"
+            printf "${GREEN}Używanie aktualnego układu partycji${NC}\n"
             mount_partitions
         else
             confirm_disk_wipe
